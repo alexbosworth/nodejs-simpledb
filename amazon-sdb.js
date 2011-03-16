@@ -30,7 +30,7 @@ var crypto = require('crypto'),
 	EventEmitter = require('events').EventEmitter,
 	$ = require('node-jquery'),
 	xml2js = require('vendor/xml2js'),
-	querystring = require('querystring');
+	querystring = require('lib/vendor/querystring');
 	
 var Sdb = function(awsAccessKey, awsSecretKey) { 
 	this.params = {};
@@ -39,7 +39,8 @@ var Sdb = function(awsAccessKey, awsSecretKey) {
 	this._awsSecretKey = awsSecretKey;
 	
 	this.params.Version = "2009-04-15";
-	this.params.SignatureVersion = 1;
+	this.params.SignatureVersion = '2';
+	this.params.SignatureMethod = 'HmacSHA256';
 	
 	this.retries = 0;
 	
@@ -326,33 +327,42 @@ Sdb.prototype.GetAttributesSuccess = function(response) {
 };
 
 Sdb.prototype.request = function(action) { 
+    var self = this;
+    
 	if (!action && !this.params.Action) throw new Error('no type of request specified')
 		
-    this.params.Action = this.params.Action || action;
-	this.params.Timestamp = this.getTimestamp();
-	this.params.Signature = this.getSignature();
+    self.params.Action = this.params.Action || action;
+	self.params.Timestamp = new Date(Math.round(new Date().getTime() / 1000) * 1000).toISOString();
+	self.params.Signature = this.getSignature();
 	
-	var client = http.createClient(80, $.cacheDns("sdb.amazonaws.com"));
-	
-	var body = querystring.stringify(this.params);
-	
-    var headers = {
-		'Content-Length' : body.length,
-		'Content-Type' : 'application/x-www-form-urlencoded; charset=UTF-8',
-     	'Host' : "sdb.amazonaws.com"
-    };
-	
-	var request = client.request('POST', '/', headers);
-		
-	request.write(body, encoding = 'utf8');
+	var body = querystring.stringify(self.params);
 
-	request.end();
-	
-	if (!this.requestStart) this.requestStart = new Date().getTime();
-	
-	request.on('response', $.proxy(this.processResponse, this));
-	
-	return this;
+    var options = {
+        host: 'sdb.amazonaws.com',
+        port: 80,
+        path: '/',
+        method: 'POST',
+        headers: {
+            'Content-Length': body.length,
+    		'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+         	'Host': "sdb.amazonaws.com",
+        }
+    };
+    
+    var request = http.request(options, function(response) {         
+        self.processResponse(response);
+    }).
+    on('error', function(err) { 
+        console.log(err); 
+    });
+    
+    request.write(body); 
+    
+    request.end();
+    	
+	if (!this.requestStart) self.requestStart = new Date().getTime();
+		
+	return self;
 };
 
 Sdb.prototype.processResponse = function(response) { 
@@ -417,33 +427,31 @@ Sdb.prototype.failure = function(result) {
 	return this.emit('failure', error, this.responseMetadata);
 }
 
-Sdb.prototype.getTimestamp = function() { 
-	var now = new Date();
-	
-	var pad = function(num) {
-		num = num.toString();
-		
-		return (num.length > 1) ? num : '0' + num;
-	}
-	
-	var day = [now.getUTCFullYear(), pad(now.getUTCMonth()+1), pad(now.getUTCDate())];
-	var sec = [pad(now.getUTCHours()), pad(now.getUTCMinutes()), pad(now.getUTCSeconds())]
-	
-	return day.join('-') + 'T' + sec.join(':') + '.000Z';
-};
-
 Sdb.prototype.getSignature = function() { 
-	var str = '', keys = [];
-	
-	for (key in this.params) keys.push(key);
-	
-	keys.sort(function(a,b) { 
-		return (a == b) ? 0 : (a.toLowerCase() > b.toLowerCase() ? 1 : -1); });
+    var query = this.params,
+        keys = [],
+        sorted = {};
 
-	for (var i = 0, k, v; k = keys[i]; i++) str += k + this.params[k];
-		
-	return crypto.createHmac('sha1', this._awsSecretKey).update(
-		new Buffer(str, encoding = 'utf8')).digest('base64');
+    for (var key in query) keys.push(key);
+
+    keys = keys.sort();
+
+    for (var k in keys) {
+        var key = keys[k];
+        sorted[key] = query[key];
+    }
+
+    var stringToSign = ["POST", "sdb.amazonaws.com", '/', querystring.stringify(sorted)].join("\n");
+    
+    stringToSign = stringToSign.replace(/'/gm, "%27");
+    stringToSign = stringToSign.replace(/\*/gm, "%2A");
+    stringToSign = stringToSign.replace(/\(/gm, "%28");
+    stringToSign = stringToSign.replace(/\)/gm, "%29");
+    stringToSign = stringToSign.replace(/!/gm, '%21');
+    
+    var hash = crypto.createHmac("sha256", this._awsSecretKey);
+
+    return hash.update(stringToSign.toString()).digest("base64");
 };
 
 exports.Sdb = Sdb;
