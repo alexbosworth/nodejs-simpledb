@@ -1,0 +1,6 @@
+[submodule "lib/node-expat"]
+	path = lib/node-expat
+	url = git://github.com/astro/node-expat.git
+[submodule "lib/Node-Querystring"]
+	path = lib/Node-Querystring
+	url = git://github.com/alexbosworth/Node-Querystring.git
