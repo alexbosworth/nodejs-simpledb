@@ -131,39 +131,112 @@ Sdb.prototype._processResponse = function(response) {
 	response.on('data', function(chunk) { data += chunk; });
 	
 	response.on('end', function() {
+	    // use expat-parser to quickly flat-parse sdb xml responses
 	    var parser = new expat.Parser("UTF-8");
-	    
-	    var results = [],
-	        resultsTag = self._params.Action + 'Result',
-	        responseTag = self._params.Action + 'Response',
-	        actionSuccess = self[self._params.Action + 'Success'],
-	        isResult = false,
-	        tagName = null;
-	    
+
+	    var pairs = [],
+	        key = null,
+	        dataStr = '',
+	        level = 0,
+	        startElement = null;
+	    	    
         parser.on('startElement', function(name, attrs) {
-            if (name == resultsTag) return isResult = true;            
+            if (!startElement) startElement = name;
+            
+            level++;
+            
+            dataStr = ''; // will get multiple text events to populate this
+            
+            key = name; // current tag
         });
         
         parser.on('endElement', function(name) {
-            if (name == resultsTag) return isResult = false;
+            // end of the begin tag
+            if (name == startElement) return self[self._params.Action + 'Success'](pairs);
             
-            if (name == responseTag) return actionSuccess(results);
-        })
-        
-        parser.on('text', function(str) { 
-            if (isResult) return results.push(str);
+            level--;
+            
+            if (!key) return; // no current open tag to add data to, exit
+
+            // add the aggregate text to a tag entry of the results array
+            var keypair = {};
+            
+            keypair[key] = dataStr;
+            keypair.level = level;
+            
+            pairs.push(keypair);
+            
+            key = null;
         });
+        
+        parser.on('text', function(str) { dataStr+= str; });
         
         parser.parse(data);
 	});
 };
 
-Sdb.prototype.listDomains = function() {
-	return this.request('ListDomains');
-};
+Sdb.prototype.domains = function() { return this.request('ListDomains'); };
+
+Sdb.prototype.select = function(query, options) {
+	if (!query) throw new Error('no query specified');
+	
+    options = options || {consistent: false, nextToken: null};
+	
+	this._params.SelectExpression = 'select ' + query;
+	this._params.ConsistentRead = ((options.consistent) ? 'true' : 'false');
+	this._params.NextToken = options.nextToken;
+	
+	return this.request('Select');
+}
+
+Sdb.prototype.SelectSuccess = function(results) {
+    var items = {},
+        metadata = {},
+        item = null,
+        itemName = null,
+        key = null;
+                
+    results.forEach(function(result) {
+        if (result.Name && result.level == 3) {
+            if (item && itemName) items[itemName] = item; // store the old item
+            
+            itemName = result.Name;
+            
+            item = {};
+        }
+        
+        if (result.Name) return key = result.Name;
+        
+        if (key && result.Value && result.level == 4) {
+            if (item[key] && typeof(item[key]) == 'string') // multiple makes an array
+                return item[key] = [item[key], result.Value];
+            else if (item[key]) // already an array means we push on
+                return item[key].push(result.Value);
+            
+            return item[key] = result.Value; // straight up single values
+        }
+        
+        if (result.RequestId) return metadata['requestId'] = result.RequestId;
+        if (result.BoxUsage) return metadata['boxUsage'] = result.BoxUsage;
+    });
+    
+    if (item && itemName) items[itemName] = item;
+    
+    this._successCbk(items, metadata);
+}
 
 Sdb.prototype.ListDomainsSuccess = function(results) { 
-    console.log(results);
+    var domains = [],
+        metadata = {};
+    
+    results.forEach(function(result) {
+        if (result.DomainName) return domains.push(result.DomainName);
+        
+        if (result.RequestId) return metadata['requestId'] = result.RequestId;
+        if (result.BoxUsage) return metadata['boxUsage'] = result.BoxUsage;
+    });
+    
+    this._successCbk(domains, metadata);
 };
 
 exports.init = init;
